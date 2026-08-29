@@ -6,33 +6,13 @@ def cutting_comparison():
     his_file = r"C:\Users\axlkl\Fag\Master\cut_time_evolution\N=10_mu0=0.5_delta0=2.0_t0=1.0_ntimesteps=1000_neigvals=1024_cutsite=5_t=20_onandoff=True.npz"
     data = np.load(his_file)
 
-    # Inspect keys once to see what's what
-    # print(data.files)
-
-    # From his save call:
-    # np.savez(...,
-    #   transfer_components_original,        -> arr_0
-    #   transfer_components_instantaneous,   -> arr_1
-    #   self.eigvals_original,               -> arr_2
-    #   instantaneous_eigvals,               -> arr_3
-    #   self.parity_array_eigvecs,           -> arr_4
-    #   cut_site,                            -> arr_5 (scalar)
-    #   n_timesteps,                         -> arr_6 (scalar)
-    #   n_eigvals,                           -> arr_7 (scalar)
-    #   t,                                   -> arr_8 (scalar, should be 20)
-    #   on_and_off                           -> arr_9
-    # )
-
     his_psi   = data['arr_0']  # transfer_components_original
     his_adiab = data['arr_1']  # transfer_components_instantaneous
-
-    # print("his_psi shape:",   his_psi.shape)
-    # print("his_adiab shape:", his_adiab.shape)
 
     n_steps = his_psi.shape[0]  # should be 1000
     tau = np.linspace(0.0, 1.0, n_steps)
 
-    # ---------- YOUR DATA (NPY) ----------
+    # ---------- MY DATA (NPY) ----------
     # Use the exact filenames for T=20
 
     my_psi_file   = r"C:\Users\axlkl\Fag\Master\_P_orig_20_1.0_2.0_0.5_Schrodinger_precomputed_Kitaev_RK4_10_0.001_dense.npy"    # fill in
@@ -42,7 +22,6 @@ def cutting_comparison():
     my_adiab = np.load(my_adiab_file)
 
     my_adiab = np.abs(my_adiab**2)
-
 
     #If data needs transposing to match
     if his_psi.shape[0] != my_psi.shape[0] and his_psi.shape[1] == my_psi.shape[0]:
@@ -89,6 +68,17 @@ def cutting_comparison():
     plt.legend()
     plt.tight_layout()
     plt.savefig(f"__eivind_original_basis.pdf")
+    plt.show()
+
+    for i in range(min(components_, diff_adiab.shape[1])):
+        plt.plot(tau, my_adiab[:, i], label=f"mine")
+        plt.plot(tau, his_adiab[:, i], label=f"his")
+    plt.xlabel(r"$\tau$")
+    plt.ylabel(r"Ground state in original basis for T = 20")
+    plt.title(r"")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"__eivind_instantaneous_basis.pdf")
     plt.show()
 
 def plot_schrodinger_cut():
@@ -142,5 +132,5 @@ def plot_schrodinger_cut():
 
 
 if __name__ == "__main__":
-    # cutting_comparison()
-    plot_schrodinger_cut()
+    cutting_comparison()
+    # plot_schrodinger_cut()

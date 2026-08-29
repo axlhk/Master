@@ -7,18 +7,18 @@ import time
 
 
 class Kitaev:
-    "dt     :       timestep (i fysisk tid eller i tau, avhengig av bruk)"
-    "tmax   :       Total time T"
-    "N      :       number of sites"
+    "dt     :       timestep in tau"
+    "tmax   :       Total physical time T"
+    "N      :       Number of sites"
     "Stride :       How often the loops print progress"
     "Hamiltonian:   Kitaev or BdG"
     "Integration:   (Euler, Euler_Cromer) or RK4"
-    "Evolution:     Adiabatic, Adiabatic_precomputed eller Schrodinger, Schrodinger_precomputed"
+    "Evolution:     Adiabatic, Adiabatic_precomputed, Schrodinger, Schrodinger_precomputed"
     "omega, mu, delta: functions(j, N, t, tmax)" 
     "return_full:   True or False, to return all a_t's, or just the gs."
-    "trunc_dim:     Dimensjon på truncert lavenergirom"
-    "warm_start:    Bruk forrige gs som startvektor i eigsh under precompute"
-    "HamRepresentation = dense or sparse"
+    "trunc_dim:     Keep trunc_dim amount of lowest energy states in Adiabatic evolution"
+    "warm_start:    True or False, to use the previous solution to speed up the diagonalizations"
+    "HamRepresentation = dense or sparse. How the Hamiltonian is represented. Typically use sparse"
 
     def __init__(self, dt, N, stride, tmax,
                  Hamiltonian, Integration, Evolution,
@@ -89,7 +89,7 @@ class Kitaev:
         else:
             raise ValueError(f"Unknown Hamiltonian type: {Hamiltonian}. Use either Kitaev or BdG")
 
-        # trunceringsdimensjon i adiabatiske ligninger
+        #Trunc_dim for adiabatic evolutions 
         if trunc_dim is None:
             self.trunc_dim = self.dim
         else:
@@ -108,7 +108,7 @@ class Kitaev:
         else:
             raise ValueError(f"Unknown integrator: {Integration}. Use either Euler or RK4. Euler_Cromer not yet implemented.")
 
-        # Evolusjonstype
+        #Evolution type
         self.evolution_type = Evolution
         if Evolution == "Adiabatic":
             self.run_method = self.run_adiabatic
@@ -130,7 +130,6 @@ class Kitaev:
     def Diag_H(self, H):
         """
         Diagonalise Hamiltonian H (dense or sparse).
-        Always converts to dense before calling eigh.
         """
         t0 = time.perf_counter()
         if not isinstance(H, np.ndarray):
@@ -145,7 +144,6 @@ class Kitaev:
         t0 = time.perf_counter()
 
         if self.ham_type == "Kitaev":
-            # Always use dense H_Kitaev_Chain here
             H = H_Kitaev_Chain(self.N, t, self.tmax,
                             self.omega_fun, self.mu_fun, self.delta_fun,
                             self.ntot)
@@ -159,7 +157,6 @@ class Kitaev:
         self.time_build_H += (t1 - t0)
         return H
 
-
     def initial_eigenpairs(self, T):
         H0 = self.build_H(T[0])
         E0, V0 = self.Diag_H(H0)
@@ -171,9 +168,8 @@ class Kitaev:
 
     def prepare_precomputed(self, Nt_tau):
         """
-        Kjør precompute én gang og lagre på denne instansen.
-        Må kalles før Evolution='Adiabatic_precomputed' brukes.
-        Bruker sparse H + eigsh med mulighet for warm start.
+        Run precompute once, and save on this instance.
+        Has to be called before Adiabatic_precomputed is used.
         """
         print("Precomputing eigenpairs along tau (sparse + eigsh)...")
         t0 = time.perf_counter()
@@ -186,12 +182,8 @@ class Kitaev:
 
     def precompute_eigensystem_tau(self, Nt_tau):
         """
-        Precompute E(τ) og V(τ) for τ ∈ [0, 1], på et Nt_tau-gitter.
-        Trunkerer til self.trunc_dim laveste energitilstander ved hver τ.
-
-        Bruker sparse H og eigsh for å hente kun trunc_dim laveste
-        eigenpar. Warm start: bruker forrige gs som startvektor v0 ved
-        neste τ hvis self.warm_start = True.
+        Precompute E(tau) and V(tau) for tau in 0, 1 for Nt_tau points.
+        Truncates to self.trunc_dim lowest energy states at each tau.
         """
         tau_grid = np.linspace(0.0, 1.0, Nt_tau)
         dim_trunc = self.trunc_dim
@@ -205,11 +197,11 @@ class Kitaev:
 
         t0_all = time.perf_counter()
 
-        v0 = None   # startvektor for eigsh
+        v0 = None   # startvector for eigsh
         for idx, tau in enumerate(tau_grid):
             t_dummy = tau
 
-            # Bygg sparse H direkte
+            # Build sparse H directly
             if self.ham_type == "Kitaev":
                 mu = self.mu_fun(t_dummy, 1.0)
                 H_sparse = H_Kitaev_Chain_sparse_cached(
@@ -227,8 +219,9 @@ class Kitaev:
             #                     self.omega_fun, self.mu_fun, self.delta_fun)
             #     H_sparse = csr_matrix(H_dense)
 
-            # Diagonaliser laveste trunc_dim egenverdier
-            # (eigsh gir dem ikke nødvendigvis sortert)
+
+            #Diagonalize lowest trunc_dim eigenvals
+            # (eigsh does'nt spit them out sorted).  
             try:
                 if self.warm_start and v0 is not None:
                     E_part, V_part = eigsh(H_sparse, k=dim_trunc, which="SA",
@@ -242,7 +235,6 @@ class Kitaev:
                 E_part = err.eigenvalues
                 V_part = err.eigenvectors
                 if E_part.shape[0] < dim_trunc:
-                    # enkel fallback: fyll opp med NaN / 0 – eller evt. ta en fallback-eigh
                     dim_here = E_part.shape[0]
                     E_tmp = np.full(dim_trunc, np.nan, dtype=float)
                     V_tmp = np.zeros((dim_full, dim_trunc), dtype=complex)
@@ -250,7 +242,7 @@ class Kitaev:
                     V_tmp[:, :dim_here] = V_part
                     E_part, V_part = E_tmp, V_tmp
 
-            # sorter etter energi (stigende)
+            #Sort by energy
             idx_sorted = np.argsort(E_part)
             E_sorted = E_part[idx_sorted]
             V_sorted = V_part[:, idx_sorted]
@@ -258,7 +250,7 @@ class Kitaev:
             E_store[idx] = E_sorted
             V_store[idx] = V_sorted
 
-            # Warm start: bruk gs som startvektor neste gang
+            # Warm start
             if self.warm_start:
                 v0 = V_sorted[:, 0]
 
@@ -272,10 +264,9 @@ class Kitaev:
 
     def run_adiabatic_precomputed(self, T, E_store, V_store):
         """
-        Adiabatic evolusjon der eigenpar (E,V) er precomputet på samme
-        tidsgitter (tau-grid) som T er basert på.
+        Adiabatic evolution where eigenpairs (E,V) are precomputed on the sime time grid which T is based on
 
-        Forutsetter:
+        Requires:
         - len(T) == E_store.shape[0] == V_store.shape[0]
         - E_store[n], V_store[n] tilsvarer eigenparene ved T[n].
         """
@@ -295,15 +286,15 @@ class Kitaev:
 
         E_all = np.zeros((Nt, dim_trunc))
 
-        #Finn fysisk grunntilstand ved t=0 i full basis
-        H0_full = self.build_H(0.0)             # bruker tett H_Kitaev_Chain
+        #Find the physical gs at t = 0 in the full basis
+        H0_full = self.build_H(0.0)             
         E0_full, V0_full = self.Diag_H(H0_full)
-        psi0 = V0_full[:, 0]                    # fysisk gs ved t=0
+        psi0 = V0_full[:, 0]                    
         # preallocer P0_orig_phys
         P0_orig_phys = np.zeros(Nt, dtype=float)
-        P0_orig_phys[0] = 1.0                   # <psi0|psi0>^2
+        P0_orig_phys[0] = 1.0                   # <psi0|psi0>^2 = 1
 
-        # initiale eigenpar (truncerte)
+        # Initial eigenpairs (truncated)
         E0_raw = E_store[0]
         V0_raw = V_store[0]     # (dim_full, dim_trunc)
 
@@ -321,23 +312,22 @@ class Kitaev:
         E_all[0] = E0
         E_all[1] = E1
 
-        # Viktig: phase_int må være dim_trunc × dim_trunc
         phase_int = np.zeros((dim_trunc, dim_trunc), dtype=complex)
 
         A = np.empty((dim_trunc, dim_trunc), dtype=complex)
         lambda_vec = np.empty(dim_trunc, dtype=complex)
-        B_mat = np.empty((dim_trunc, dim_trunc), dtype=complex)  # for overlaps if you want
+        B_mat = np.empty((dim_trunc, dim_trunc), dtype=complex)  
 
         # n = 0: forward difference
         A0 = psi_dotpsi_forward(V0, V1, dt)
         lambda0 = lambda_from_E_and_A(E0, A0)
         a_t[1], phase_int = self.stepper(a_t[0], phase_int, A0, lambda0, dt)
 
-        #beregn fysisk psi(t1) og projiser på psi0
+        #Calculate physical psi(t1) and project onto psi0
         I_k_1 = -phase_int[0, :]
         phase_factors_1 = np.exp(-1j * I_k_1)
-        a_phys_1 = phase_factors_1 * a_t[1]     # fys. koeff i instantan basis ved t1
-        psi_trunc_1 = V1 @ a_phys_1             # |psi(t1)> i full basis (truncert)
+        a_phys_1 = phase_factors_1 * a_t[1]     # phys. coeff in instantaneous basis at t1
+        psi_trunc_1 = V1 @ a_phys_1             # |psi(t1)> in full basis (truncated)
         P0_orig_phys[1] = np.abs(np.vdot(psi0, psi_trunc_1))**2
 
         V_prev, V_curr = V0, V1
@@ -345,25 +335,24 @@ class Kitaev:
 
         t_loop_start = time.perf_counter()
 
-        # tidsutvikling (ingen Diag_H/build_H her!)
+        # Time evolution
         for n in range(1, Nt - 1):
-            # 1) Get raw (unsorted) eigenpairs at next step
+            #Get raw (unsorted) eigenpairs at next step
             E_next_raw = E_store[n+1]
             V_next_raw = V_store[n+1]
 
-            # 2) Match and fix phases relative to current basis
+            #Match and fix phases relative to current basis
             V_next_matched, perm = match_eigenvectors(V_curr, V_next_raw)
             E_next = E_next_raw[perm]
             V_next = fix_phases(V_curr, V_next_matched)
 
-            # 3) Central Berry connection and lambda in-place
             central_A_inplace(V_prev, V_curr, V_next, dt, A)
             lambda_from_E_and_A_inplace(E_curr, A, lambda_vec)
 
-            # 4) Adiabatic step in truncated basis
+            #Adiabatic step in truncated basis
             a_t[n+1], phase_int = self.stepper(a_t[n], phase_int, A, lambda_vec, dt)
 
-            # 5) Reconstruct physical amplitudes in original basis
+            #Reconstruct physical amplitudes in original basis
             I_k = -phase_int[0, :]
             phase_factors = np.exp(-1j * I_k)
             a_phys = phase_factors * a_t[n+1]
@@ -371,11 +360,11 @@ class Kitaev:
             B_mat[:] = V0.conj().T @ V_curr
             b_t[n+1] = B_mat @ a_phys
 
-            # 6) Physical projection onto psi0
+            #Physical projection onto psi0
             psi_trunc = V_curr @ a_phys
             P0_orig_phys[n+1] = np.abs(np.vdot(psi0, psi_trunc))**2
 
-            # 7) Rotate for next iteration
+            #Rotate for next iteration
             V_prev, V_curr = V_curr, V_next
             E_curr = E_next
 
@@ -388,7 +377,7 @@ class Kitaev:
         t_loop_end = time.perf_counter()
         self.time_evolution_loop += (t_loop_end - t_loop_start)
 
-        # reduksjon til exp_degen laveste innenfor trunc_dim
+        # Reduction to exp_degen lowest in trunc_dim
         k = min(self.exp_degen, dim_trunc)
         a_t_reduced = np.zeros((Nt, k), dtype=complex)
         for n in range(Nt):
@@ -406,8 +395,8 @@ class Kitaev:
 
     def _run_adiabatic_precomputed_main(self, T_dummy):
         """
-        Kjøres når Evolution='Adiabatic_precomputed'.
-        Ignorerer T_dummy. Bruker precomputed tau_grid/E_store/V_store.
+        Runs when Evolution='Adiabatic_precomputed'.
+        Ignore T_dummy. Using precomputed tau_grid/E_store/V_store.
         """
         if self.tau_grid is None or self.E_store is None or self.V_store is None:
             raise RuntimeError(
@@ -415,11 +404,11 @@ class Kitaev:
                 "Kall prepare_precomputed(Nt_tau) før du bruker Adiabatic_precomputed."
             )
 
-        # fysisk tidsgitter for denne tmax
+        # Physical time grid for this tmax
         T = self.tau_grid * self.tmax
         dt_phys = T[1] - T[0]
 
-        # midlertidig sett fysisk dt inn i self.dt (brukes av stepper)
+        # used by stepper
         dt_old = self.dt
         self.dt = dt_phys
 
@@ -520,8 +509,8 @@ class Kitaev:
     
     def prepare_precomputed_dense(self, Nt_tau):
         """
-        Dense precompute of E(τ), V(τ) for τ in [0,1].
-        This *always* uses the chosen Hamiltonian type (Kitaev or BdG),
+        Dense precompute of E(tau), V(tau) for tau in [0,1].
+        This always uses the chosen Hamiltonian type (Kitaev or BdG),
         independent of HamRepresentation ("dense"/"sparse").
         """
         tau_grid = np.linspace(0.0, 1.0, Nt_tau)
@@ -770,34 +759,44 @@ def precompute_ntot(N):
 
 @njit
 def H_Kitaev_Chain(N, t, tmax, omega_fun, mu_fun, delta_fun, ntot_arr):
+    "Hamiltonian from Kitaevs original article"
+
     dim = 2**N
     mu = mu_fun(t, tmax)
 
     H = np.zeros((dim, dim), dtype=np.complex128)
 
-    for n in range(dim):
+    for n in range(dim):    
         ntot = ntot_arr[n]
-        H[n, n] += - mu * (ntot - N/2)
+        
+        #simple mu term
+        H[n, n] += - mu * (ntot - N/2) 
 
-        for j in range(N-1):
+        for j in range(N-1):     #Sum_j and actions of raising / lowering operators
+            #Omega terms:
+            #a^dag_j a_j+1
             c1, m1 = a_on_basis_state(n, j + 1)
             if m1 != -1:
                 c2, m2 = a_dag_on_basis_state(m1, j)
                 if m2 != -1:
                     H[m2, n] += -omega_fun(j, N, t, tmax) * c1 * c2
 
+            #a^dag_j+1 a_j
             c3, m3 = a_on_basis_state(n, j)
             if m3 != -1:
                 c4, m4 = a_dag_on_basis_state(m3, j + 1)
                 if m4 != -1:
                     H[m4, n] += -omega_fun(j, N, t, tmax) * c3 * c4
 
+            #delta terms
+            #a_j a_j+1
             c5, m5 = a_on_basis_state(n, j + 1)
             if m5 != -1:
                 c6, m6 = a_on_basis_state(m5, j)
                 if m6 != -1:
                     H[m6, n] += delta_fun(j, N, t, tmax) * c5 * c6
 
+            # a^dag_j+1 a^dag_j
             c7, m7 = a_dag_on_basis_state(n, j)
             if m7 != -1:
                 c8, m8 = a_dag_on_basis_state(m7, j + 1)
@@ -810,7 +809,7 @@ def H_Kitaev_Chain(N, t, tmax, omega_fun, mu_fun, delta_fun, ntot_arr):
 def precompute_couplings_Kitaev(N, tau_grid, tmax):
     """
     Precompute omega_j(t) and delta_j(t) on the tau grid, for a Kitaev chain.
-    Assumes omega_Eivind_4_2 and delta_Eivind_4_2 are @njit.
+    Assumes omega and delta are @njit.
     """
     Nt = len(tau_grid)
     omega_tab = np.empty((Nt, N-1), dtype=np.float64)
@@ -1095,21 +1094,22 @@ def truncation():   #Used to find appropriate truncation
     plt.show()
 
 def adiabatic_approx():
-    dt_tau = 1 / 50
-    Nt_tau = int(1.0/dt_tau) + 1
+    # dt_tau = 1 / 50
+    Nt_tau = 1000 #int(1.0/dt_tau) + 1
+    dt_tau = 1 / (Nt_tau-1) 
     stride = 10
 
-    # tmax_list = [0.01, 0.1, 0.5, 1, 5, 10, 20]
-    tmax_list = [0.01]
-    trunc = 150 #136 for eps = 1e-4
+    tmax_list = [0.01, 0.1, 0.5, 1, 5, 10, 20]
+    # tmax_list = [20]
+    trunc = 10 #136 for eps = 1e-4
 
-    N = 10
+    N = 6
     Hamiltonian_type = "Kitaev"
     Integrator = "RK4"
     Evolution_type = "Adiabatic_precomputed"
     exp_degen = 1
     return_full = False
-    Hamrep = "sparse"   #sparse, dense
+    Hamrep = "sparse"   #sparse or dense matrix representation
 
     model = Kitaev(dt=dt_tau,
                    N=N,
@@ -1143,6 +1143,12 @@ def adiabatic_approx():
 
         tau = T_run / tmax_
 
+        np.save(f"{trunc}_T_run_{tmax_}_{omega0}_{delta0}_{mu0}_{Evolution_type}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{Hamiltonian_type}.npy", T_run)
+        np.save(f"{trunc}_a_t_reduced_{tmax_}_{omega0}_{delta0}_{mu0}_{Evolution_type}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{Hamiltonian_type}.npy", a_t_reduced)
+        np.save(f"{trunc}_psi_t_{tmax_}_{omega0}_{delta0}_{mu0}_{Evolution_type}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{Hamiltonian_type}.npy", b_t)
+        np.save(f"{trunc}_c_t_orig_{tmax_}_{omega0}_{delta0}_{mu0}_{Evolution_type}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{Hamiltonian_type}.npy", P0_orig_phys)
+
+
         P0_adiab = np.sum(np.abs(a_t_reduced)**2, axis=1)
         P0_orig = P0_orig_phys
         # P0_orig = np.sum(np.abs(b_t[:, :exp_degen])**2, axis=1)
@@ -1162,7 +1168,7 @@ def adiabatic_approx():
         plt.legend()
 
     plt.tight_layout()
-    plt.savefig(f"__eivind_{len(tmax_list)}_{omega0}_{delta0}_{mu0}_{Evolution_type}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{Hamrep}.pdf")
+    plt.savefig(f"{trunc}__eivind_{len(tmax_list)}_{omega0}_{delta0}_{mu0}_{Evolution_type}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{Hamrep}.pdf")
     plt.show()
 
 def schrodinger():
@@ -1246,7 +1252,7 @@ def schrodinger_approx_with_instantaneous():
     stride = 10
     tmax_list = [0.01, 0.1, 0.5, 1, 5, 10, 20]
 
-    N = 10
+    N = 8
     Hamiltonian_type = "Kitaev"
     Integrator = "RK4"
     exp_degen = 1
@@ -1318,9 +1324,10 @@ def schrodinger_approx_with_instantaneous():
         for n in range(len(tau)):
             P0_orig[n] = np.abs(np.vdot(psi0, psi_t[n]))**2     #OOPS: psi_t is actually in Fock basis. Use c_t_orig. (They coincide for the ground state so it's fine)
 
-        np.save(f"_T_run_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", T_run)
-        np.save(f"_a_t_inst_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", a_t_inst)
-        np.save(f"_psi_t_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", psi_t)
+        np.save(f"1_T_run_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", T_run)
+        np.save(f"1_a_t_inst_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", a_t_inst)
+        np.save(f"1_psi_t_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", psi_t)
+        np.save(f"1_c_t_orig_{tmax_}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.npy", c_t_orig)
 
         plt.subplot(1,2,2)
         plt.plot(tau, P0_inst, label=f"T = {tmax_}")
@@ -1337,7 +1344,7 @@ def schrodinger_approx_with_instantaneous():
         plt.legend()
 
     plt.tight_layout()
-    plt.savefig(f"_eivind_{len(tmax_list)}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.pdf")
+    plt.savefig(f"1_eivind_{len(tmax_list)}_{omega0}_{delta0}_{mu0}_{evolution}_{Hamiltonian_type}_{Integrator}_{N}_{dt_tau}_{HamRep}.pdf")
     plt.show()
 
 def plot_delete():
@@ -1475,9 +1482,9 @@ def plot_delete_():
 if __name__ == "__main__":
     # Kjør f.eks.:
     # truncation()  #NOT OPTIMIZED FOR THIS CODE, SEE Truncation_Optimized.py
-    # adiabatic_approx()
+    adiabatic_approx()
     # schrodinger()
-    schrodinger_approx_with_instantaneous()
+    # schrodinger_approx_with_instantaneous()
     # plot_delete()
     # plot_delete_()
 
